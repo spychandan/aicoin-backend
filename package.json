@@ -1,9 +1,9 @@
 {
-  "name": "allegiance-coin-api",
-  "private": true,
+  "name": "coin-ai-api",
+  "version": "1.0.0",
   "type": "module",
   "engines": {
-    "node": "18.x"
+    "node": "24.x"
   },
   "dependencies": {
     "openai": "^4.0.0"
