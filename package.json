@@ -1,9 +1,11 @@
 {
-  "name": "ai-coin-backend-netlify",
-  "version": "1.0.0",
+  "name": "allegiance-coin-api",
+  "private": true,
   "type": "module",
+  "engines": {
+    "node": "18.x"
+  },
   "dependencies": {
     "openai": "^4.0.0"
   }
 }
-
