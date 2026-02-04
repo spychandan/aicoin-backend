@@ -1,14 +1,14 @@
 import OpenAI from "openai";
 
-export async function handler(event) {
-  // ✅ CORS headers (used everywhere)
-  const headers = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS"
-  };
+const headers = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS"
+};
 
-  // ✅ Handle preflight request
+export async function handler(event) {
+
+  // ✅ HANDLE PREFLIGHT FIRST — VERY IMPORTANT
   if (event.httpMethod === "OPTIONS") {
     return {
       statusCode: 200,
@@ -17,7 +17,6 @@ export async function handler(event) {
     };
   }
 
-  // ❌ Block anything except POST
   if (event.httpMethod !== "POST") {
     return {
       statusCode: 405,
@@ -39,13 +38,13 @@ export async function handler(event) {
     }
 
     const prompt = `
-Create a highly realistic custom coin concept.
-Shape: ${shape || "custom shape"}
-Material finish: ${finish || "gold"}
-Engraving text: "${engraving || "none"}"
-Design description: ${description}
-Style: premium, commemorative, metal coin
-Lighting: studio lighting highlighting metal texture
+Highly realistic custom coin product photo.
+Shape: ${shape || "custom"}
+Material: ${finish || "gold"}
+Engraving: ${engraving || "none"}
+Design: ${description}
+Style: premium commemorative coin
+Lighting: studio lighting
 Background: dark neutral
 View: centered, front-facing
 `;
@@ -70,8 +69,7 @@ View: centered, front-facing
     };
 
   } catch (err) {
-    console.error("OPENAI ERROR:", err);
-
+    console.error("FUNCTION ERROR:", err);
     return {
       statusCode: 500,
       headers,
