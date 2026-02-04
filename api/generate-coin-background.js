@@ -1,12 +1,11 @@
-export default function handler(req, res) {
+module.exports = function handler(req, res) {
   try {
-    return res.status(200).json({
+    res.status(200).json({
       ok: true,
-      method: req.method,
-      hasApiKey: !!process.env.OPENAI_API_KEY,
-      body: req.body || null
+      message: "Vercel API working",
+      method: req.method
     });
   } catch (e) {
-    return res.status(500).json({ error: e.message });
+    res.status(500).json({ error: e.message });
   }
-}
+};
