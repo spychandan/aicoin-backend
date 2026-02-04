@@ -1,9 +1,27 @@
 import OpenAI from "openai";
 
 export async function handler(event) {
+  // ✅ CORS headers (used everywhere)
+  const headers = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS"
+  };
+
+  // ✅ Handle preflight request
+  if (event.httpMethod === "OPTIONS") {
+    return {
+      statusCode: 200,
+      headers,
+      body: ""
+    };
+  }
+
+  // ❌ Block anything except POST
   if (event.httpMethod !== "POST") {
     return {
       statusCode: 405,
+      headers,
       body: JSON.stringify({ error: "Method not allowed" })
     };
   }
@@ -15,6 +33,7 @@ export async function handler(event) {
     if (!description) {
       return {
         statusCode: 400,
+        headers,
         body: JSON.stringify({ error: "Description is required" })
       };
     }
@@ -43,10 +62,7 @@ View: centered, front-facing
 
     return {
       statusCode: 200,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Headers": "Content-Type"
-      },
+      headers,
       body: JSON.stringify({
         success: true,
         imageUrl: result.data[0].url
@@ -55,8 +71,10 @@ View: centered, front-facing
 
   } catch (err) {
     console.error("OPENAI ERROR:", err);
+
     return {
       statusCode: 500,
+      headers,
       body: JSON.stringify({
         error: "Image generation failed",
         message: err.message
