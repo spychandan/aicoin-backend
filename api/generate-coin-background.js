@@ -51,26 +51,28 @@ Studio lighting, premium metal texture, dark background
           model: "gpt-image-1",
           prompt,
           size: "1024x1024",
+          response_format: "b64_json",
         }),
       }
     );
 
     const data = await response.json();
 
-    // 🔍 LOG FULL OPENAI RESPONSE FOR DEBUGGING
     console.log("OPENAI RAW RESPONSE:", JSON.stringify(data));
 
     if (!response.ok) {
       throw new Error(data.error?.message || "OpenAI request failed");
     }
 
-    if (!data?.data?.[0]?.url) {
-      throw new Error("OpenAI returned no image URL");
+    const imageBase64 = data?.data?.[0]?.b64_json;
+
+    if (!imageBase64) {
+      throw new Error("OpenAI returned no image data");
     }
 
     return res.status(200).json({
       success: true,
-      imageUrl: data.data[0].url,
+      imageBase64,
     });
   } catch (err) {
     console.error("OPENAI FAILURE:", err);
