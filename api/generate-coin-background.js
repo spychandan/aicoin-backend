@@ -25,9 +25,7 @@ export default async function handler(req, res) {
     const { description, shape, finish, engraving } = req.body ?? {};
 
     if (!description) {
-      return res.status(400).json({
-        error: "Description is required",
-      });
+      return res.status(400).json({ error: "Description is required" });
     }
 
     const prompt = `
@@ -51,7 +49,6 @@ Studio lighting, premium metal texture, dark background
           model: "gpt-image-1",
           prompt,
           size: "1024x1024",
-          response_format: "b64_json",
         }),
       }
     );
