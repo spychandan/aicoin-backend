@@ -1,10 +1,13 @@
 import fs from "fs";
 import path from "path";
 import sharp from "sharp";
-import potrace from "potrace";
 import * as THREE from "three";
 import { SVGLoader } from "three-stdlib";
 import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const potrace = require("potrace");
+
 
 /**
  * POST body:
