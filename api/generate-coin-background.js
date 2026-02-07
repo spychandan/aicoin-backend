@@ -2,13 +2,11 @@ import fs from "fs";
 import path from "path";
 import fetch from "node-fetch";
 import sharp from "sharp";
-import potrace from "potrace";
-import { exec } from "child_process";
+import * as THREE from "three";
+import { GLTFExporter } from "three-stdlib";
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).end();
-  }
+  if (req.method !== "POST") return res.status(405).end();
 
   try {
     const { description } = req.body;
@@ -16,45 +14,66 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Description required" });
     }
 
-    // 1️⃣ STRONG PROMPT (USER DOES NOTHING)
+    // 1️⃣ STRONG PROMPT (forced orthographic)
     const prompt = `
 Flat orthographic front-view commemorative coin.
 Single object centered.
-Clear outer silhouette.
-No perspective, no angle, no shadows.
-High contrast between coin and background.
-Raised metallic details.
+Clear silhouette.
+No perspective.
+High contrast.
 Plain dark background.
-Any custom shape allowed.
-Design description: ${description}
+Metallic raised details.
+Design: ${description}
 `;
 
-    // 2️⃣ Generate 2D image
+    // 2️⃣ Generate image
     const imageBase64 = await generateImage(prompt);
-    const imagePath = "/tmp/coin.png";
+    const imgBuffer = Buffer.from(imageBase64, "base64");
 
-    fs.writeFileSync(imagePath, Buffer.from(imageBase64, "base64"));
-
-    // 3️⃣ Convert to black/white silhouette
-    const bwPath = "/tmp/coin-bw.png";
-    await sharp(imagePath)
+    // 3️⃣ Convert to grayscale heightmap
+    const { data, info } = await sharp(imgBuffer)
+      .resize(256, 256)
       .grayscale()
-      .threshold(180)
-      .toFile(bwPath);
+      .raw()
+      .toBuffer({ resolveWithObject: true });
 
-    // 4️⃣ Convert silhouette → SVG
-    const svgPath = "/tmp/coin.svg";
-    await new Promise((resolve, reject) => {
-      potrace.trace(bwPath, { color: "black" }, (err, svg) => {
-        if (err) reject(err);
-        fs.writeFileSync(svgPath, svg);
-        resolve();
-      });
+    // 4️⃣ Create 3D mesh
+    const geometry = new THREE.PlaneGeometry(10, 10, 255, 255);
+
+    for (let i = 0; i < geometry.attributes.position.count; i++) {
+      const height = data[i] / 255;
+      geometry.attributes.position.setZ(i, height * 1.5);
+    }
+
+    geometry.computeVertexNormals();
+
+    const material = new THREE.MeshStandardMaterial({
+      color: 0xaaaaaa,
+      metalness: 1,
+      roughness: 0.3
     });
 
-    // 5️⃣ SVG → GLB (extrusion)
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.rotateX(-Math.PI / 2);
+
+    const scene = new THREE.Scene();
+    scene.add(mesh);
+
+    // 5️⃣ Export GLB
+    const exporter = new GLTFExporter();
     const glbPath = `/tmp/coin-${Date.now()}.glb`;
-    await extrudeSVGToGLB(svgPath, glbPath);
+
+    await new Promise((resolve, reject) => {
+      exporter.parse(
+        scene,
+        (result) => {
+          fs.writeFileSync(glbPath, Buffer.from(result));
+          resolve();
+        },
+        reject,
+        { binary: true }
+      );
+    });
 
     return res.json({
       success: true,
@@ -67,37 +86,20 @@ Design description: ${description}
   }
 }
 
-// ---- Helpers ----
-
 async function generateImage(prompt) {
-  const response = await fetch(
-    "https://api.openai.com/v1/images/generations",
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: "gpt-image-1",
-        prompt,
-        size: "1024x1024"
-      })
-    }
-  );
-
-  const data = await response.json();
-  return data.data[0].b64_json;
-}
-
-function extrudeSVGToGLB(svgPath, glbPath) {
-  return new Promise((resolve, reject) => {
-    exec(
-      `npx svg-extrude ${svgPath} ${glbPath} --depth 4 --bevel`,
-      (err) => {
-        if (err) reject(err);
-        resolve();
-      }
-    );
+  const res = await fetch("https://api.openai.com/v1/images/generations", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: "gpt-image-1",
+      prompt,
+      size: "1024x1024"
+    })
   });
+
+  const data = await res.json();
+  return data.data[0].b64_json;
 }
