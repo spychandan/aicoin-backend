@@ -1,105 +1,144 @@
 import fs from "fs";
 import path from "path";
-import fetch from "node-fetch";
 import sharp from "sharp";
+import potrace from "potrace";
 import * as THREE from "three";
-import { GLTFExporter } from "three-stdlib";
+import { SVGLoader } from "three-stdlib";
+import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
+
+/**
+ * POST body:
+ * {
+ *   "imageBase64": "data:image/png;base64,..."
+ * }
+ */
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).end();
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
   try {
-    const { description } = req.body;
-    if (!description) {
-      return res.status(400).json({ error: "Description required" });
+    const { imageBase64 } = req.body;
+    if (!imageBase64) {
+      return res.status(400).json({ error: "imageBase64 required" });
     }
 
-    // 1️⃣ STRONG PROMPT (forced orthographic)
-    const prompt = `
-Flat orthographic front-view commemorative coin.
-Single object centered.
-Clear silhouette.
-No perspective.
-High contrast.
-Plain dark background.
-Metallic raised details.
-Design: ${description}
-`;
+    // --- temp paths ---
+    const ts = Date.now();
+    const pngPath = `/tmp/coin-${ts}.png`;
+    const svgPath = `/tmp/coin-${ts}.svg`;
+    const glbPath = `/tmp/coin-${ts}.glb`;
 
-    // 2️⃣ Generate image
-    const imageBase64 = await generateImage(prompt);
-    const imgBuffer = Buffer.from(imageBase64, "base64");
+    /* --------------------------------------------------
+       1️⃣ IMAGE → CLEAN SILHOUETTE (CRITICAL STEP)
+       -------------------------------------------------- */
+    const imageBuffer = Buffer.from(
+      imageBase64.replace(/^data:image\/\w+;base64,/, ""),
+      "base64"
+    );
 
-    // 3️⃣ Convert to grayscale heightmap
-    const { data, info } = await sharp(imgBuffer)
-      .resize(256, 256)
+    await sharp(imageBuffer)
+      .resize(1024, 1024, { fit: "contain", background: "#ffffff" })
       .grayscale()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
+      .threshold(180)
+      .png()
+      .toFile(pngPath);
 
-    // 4️⃣ Create 3D mesh
-    const geometry = new THREE.PlaneGeometry(10, 10, 255, 255);
-
-    for (let i = 0; i < geometry.attributes.position.count; i++) {
-      const height = data[i] / 255;
-      geometry.attributes.position.setZ(i, height * 1.5);
-    }
-
-    geometry.computeVertexNormals();
-
-    const material = new THREE.MeshStandardMaterial({
-      color: 0xaaaaaa,
-      metalness: 1,
-      roughness: 0.3
+    /* --------------------------------------------------
+       2️⃣ PNG → SVG (VECTOR OUTLINE)
+       -------------------------------------------------- */
+    const svg = await new Promise((resolve, reject) => {
+      potrace.trace(
+        pngPath,
+        {
+          threshold: 180,
+          turdSize: 100,
+          optCurve: true,
+          optTolerance: 0.2
+        },
+        (err, svg) => {
+          if (err) reject(err);
+          else resolve(svg);
+        }
+      );
     });
 
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.rotateX(-Math.PI / 2);
+    fs.writeFileSync(svgPath, svg);
+
+    /* --------------------------------------------------
+       3️⃣ SVG → 3D EXTRUDED COIN (THREE.JS)
+       -------------------------------------------------- */
+    const svgData = fs.readFileSync(svgPath, "utf8");
+    const loader = new SVGLoader();
+    const svgParsed = loader.parse(svgData);
 
     const scene = new THREE.Scene();
-    scene.add(mesh);
 
-    // 5️⃣ Export GLB
+    svgParsed.paths.forEach((pathItem) => {
+      const shapes = SVGLoader.createShapes(pathItem);
+
+      shapes.forEach((shape) => {
+        const geometry = new THREE.ExtrudeGeometry(shape, {
+          depth: 4,
+          bevelEnabled: true,
+          bevelThickness: 0.4,
+          bevelSize: 0.4,
+          bevelSegments: 2
+        });
+
+        geometry.center();
+
+        const material = new THREE.MeshStandardMaterial({
+          color: 0xd4af37, // gold-like
+          metalness: 0.95,
+          roughness: 0.25
+        });
+
+        const mesh = new THREE.Mesh(geometry, material);
+        scene.add(mesh);
+      });
+    });
+
+    // lighting (important for realism)
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+    dirLight.position.set(5, 10, 7);
+    scene.add(dirLight);
+
+    /* --------------------------------------------------
+       4️⃣ EXPORT → GLB
+       -------------------------------------------------- */
     const exporter = new GLTFExporter();
-    const glbPath = `/tmp/coin-${Date.now()}.glb`;
 
     await new Promise((resolve, reject) => {
       exporter.parse(
         scene,
-        (result) => {
-          fs.writeFileSync(glbPath, Buffer.from(result));
+        (gltf) => {
+          fs.writeFileSync(glbPath, Buffer.from(gltf));
           resolve();
         },
-        reject,
+        (err) => reject(err),
         { binary: true }
       );
     });
 
-    return res.json({
+    /* --------------------------------------------------
+       5️⃣ RETURN GLB AS BASE64
+       -------------------------------------------------- */
+    const glbBase64 = fs.readFileSync(glbPath).toString("base64");
+
+    return res.status(200).json({
       success: true,
-      glbUrl: `https://aicoin-backend.vercel.app/api/download?file=${path.basename(glbPath)}`
+      glbBase64
     });
 
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: err.message });
+    console.error("Coin generation error:", err);
+    return res.status(500).json({
+      error: "Coin generation failed",
+      details: err.message
+    });
   }
-}
-
-async function generateImage(prompt) {
-  const res = await fetch("https://api.openai.com/v1/images/generations", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: "gpt-image-1",
-      prompt,
-      size: "1024x1024"
-    })
-  });
-
-  const data = await res.json();
-  return data.data[0].b64_json;
 }
