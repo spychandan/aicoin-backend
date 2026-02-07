@@ -6,6 +6,11 @@
     "node": "24.x"
   },
   "dependencies": {
-    "openai": "^4.0.0"
+    "gltf-pipeline": "^4.3.0",
+    "openai": "^4.0.0",
+    "potrace": "^2.1.1",
+    "sharp": "^0.34.5",
+    "three": "^0.182.0",
+    "three-stdlib": "^2.36.1"
   }
 }

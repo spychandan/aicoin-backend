@@ -1,81 +1,103 @@
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Content-Type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-function setCors(res) {
-  for (const [key, value] of Object.entries(corsHeaders)) {
-    res.setHeader(key, value);
-  }
-}
+import fs from "fs";
+import path from "path";
+import fetch from "node-fetch";
+import sharp from "sharp";
+import potrace from "potrace";
+import { exec } from "child_process";
 
 export default async function handler(req, res) {
-  setCors(res);
-
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).end();
   }
 
   try {
-    const { description, shape, finish, engraving } = req.body ?? {};
-
+    const { description } = req.body;
     if (!description) {
-      return res.status(400).json({ error: "Description is required" });
+      return res.status(400).json({ error: "Description required" });
     }
 
+    // 1️⃣ STRONG PROMPT (USER DOES NOTHING)
     const prompt = `
-Highly realistic custom commemorative coin.
-Shape: ${shape || "custom"}
-Material finish: ${finish || "gold"}
-Engraving: ${engraving || "none"}
-Design: ${description}
-Studio lighting, premium metal texture, dark background
+Flat orthographic front-view commemorative coin.
+Single object centered.
+Clear outer silhouette.
+No perspective, no angle, no shadows.
+High contrast between coin and background.
+Raised metallic details.
+Plain dark background.
+Any custom shape allowed.
+Design description: ${description}
 `;
 
-    const response = await fetch(
-      "https://api.openai.com/v1/images/generations",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "gpt-image-1",
-          prompt,
-          size: "1024x1024",
-        }),
+    // 2️⃣ Generate 2D image
+    const imageBase64 = await generateImage(prompt);
+    const imagePath = "/tmp/coin.png";
+
+    fs.writeFileSync(imagePath, Buffer.from(imageBase64, "base64"));
+
+    // 3️⃣ Convert to black/white silhouette
+    const bwPath = "/tmp/coin-bw.png";
+    await sharp(imagePath)
+      .grayscale()
+      .threshold(180)
+      .toFile(bwPath);
+
+    // 4️⃣ Convert silhouette → SVG
+    const svgPath = "/tmp/coin.svg";
+    await new Promise((resolve, reject) => {
+      potrace.trace(bwPath, { color: "black" }, (err, svg) => {
+        if (err) reject(err);
+        fs.writeFileSync(svgPath, svg);
+        resolve();
+      });
+    });
+
+    // 5️⃣ SVG → GLB (extrusion)
+    const glbPath = `/tmp/coin-${Date.now()}.glb`;
+    await extrudeSVGToGLB(svgPath, glbPath);
+
+    return res.json({
+      success: true,
+      glbUrl: `https://aicoin-backend.vercel.app/api/download?file=${path.basename(glbPath)}`
+    });
+
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+// ---- Helpers ----
+
+async function generateImage(prompt) {
+  const response = await fetch(
+    "https://api.openai.com/v1/images/generations",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: "gpt-image-1",
+        prompt,
+        size: "1024x1024"
+      })
+    }
+  );
+
+  const data = await response.json();
+  return data.data[0].b64_json;
+}
+
+function extrudeSVGToGLB(svgPath, glbPath) {
+  return new Promise((resolve, reject) => {
+    exec(
+      `npx svg-extrude ${svgPath} ${glbPath} --depth 4 --bevel`,
+      (err) => {
+        if (err) reject(err);
+        resolve();
       }
     );
-
-    const data = await response.json();
-
-    console.log("OPENAI RAW RESPONSE:", JSON.stringify(data));
-
-    if (!response.ok) {
-      throw new Error(data.error?.message || "OpenAI request failed");
-    }
-
-    const imageBase64 = data?.data?.[0]?.b64_json;
-
-    if (!imageBase64) {
-      throw new Error("OpenAI returned no image data");
-    }
-
-    return res.status(200).json({
-      success: true,
-      imageBase64,
-    });
-  } catch (err) {
-    console.error("OPENAI FAILURE:", err);
-    return res.status(500).json({
-      error: "Image generation failed",
-      details: err.message,
-    });
-  }
+  });
 }
