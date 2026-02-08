@@ -1,91 +1,82 @@
-import fs from "fs";
-import path from "path";
-import { v4 as uuid } from "uuid";
-import { createCanvas, loadImage } from "canvas";
-import potrace from "potrace";
-import * as THREE from "three";
-import { GLTFExporter } from "three/examples/jsm/exporters/GLTFExporter.js";
-import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+};
+
+function setCors(res) {
+  for (const [key, value] of Object.entries(corsHeaders)) {
+    res.setHeader(key, value);
+  }
+}
 
 export default async function handler(req, res) {
+  setCors(res);
+
+  // Handle CORS preflight
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
   try {
-    const { imageBase64 } = req.body;
-    if (!imageBase64) {
-      return res.status(400).json({ error: "Missing image" });
+    const { description, shape, finish, engraving } = req.body ?? {};
+
+    if (!description) {
+      return res.status(400).json({ error: "Description is required" });
     }
 
-    // ---------- STEP 1: Save PNG ----------
-    const id = uuid();
-    const pngPath = `/tmp/${id}.png`;
-    const svgPath = `/tmp/${id}.svg`;
-    const glbPath = `/tmp/${id}.glb`;
+    const prompt = `
+Highly realistic custom commemorative coin.
+Shape: ${shape || "custom"}
+Material finish: ${finish || "gold"}
+Engraving: ${engraving || "none"}
+Design: ${description}
+Studio lighting, premium metal texture, dark background
+`;
 
-    const buffer = Buffer.from(imageBase64, "base64");
-    fs.writeFileSync(pngPath, buffer);
-
-    // ---------- STEP 2: PNG → SVG ----------
-    await new Promise((resolve, reject) => {
-      potrace.trace(pngPath, { threshold: 180 }, (err, svg) => {
-        if (err) reject(err);
-        fs.writeFileSync(svgPath, svg);
-        resolve();
-      });
-    });
-
-    // ---------- STEP 3: SVG → 3D ----------
-    const svgData = fs.readFileSync(svgPath, "utf8");
-    const loader = new SVGLoader();
-    const svg = loader.parse(svgData);
-
-    const shapes = [];
-    svg.paths.forEach((p) => {
-      shapes.push(...p.toShapes(true));
-    });
-
-    const geometry = new THREE.ExtrudeGeometry(shapes, {
-      depth: 0.15,
-      bevelEnabled: true,
-      bevelThickness: 0.03,
-      bevelSize: 0.02,
-      bevelSegments: 3
-    });
-
-    geometry.center();
-
-    const material = new THREE.MeshStandardMaterial({
-      color: 0xd4af37,
-      metalness: 0.9,
-      roughness: 0.3
-    });
-
-    const mesh = new THREE.Mesh(geometry, material);
-
-    const scene = new THREE.Scene();
-    scene.add(mesh);
-
-    // ---------- STEP 4: Export GLB ----------
-    const exporter = new GLTFExporter();
-    await new Promise((resolve) => {
-      exporter.parse(
-        scene,
-        (gltf) => {
-          fs.writeFileSync(glbPath, Buffer.from(gltf));
-          resolve();
+    const response = await fetch(
+      "https://api.openai.com/v1/images/generations",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         },
-        { binary: true }
-      );
-    });
+        body: JSON.stringify({
+          model: "gpt-image-1",
+          prompt,
+          size: "1024x1024",
+        }),
+      }
+    );
 
-    // ---------- STEP 5: Return GLB ----------
-    const glbBase64 = fs.readFileSync(glbPath).toString("base64");
+    const data = await response.json();
 
-    res.json({
+    console.log("OPENAI RAW RESPONSE:", JSON.stringify(data));
+
+    if (!response.ok) {
+      throw new Error(data.error?.message || "OpenAI request failed");
+    }
+
+    const imageBase64 = data?.data?.[0]?.b64_json;
+
+    if (!imageBase64) {
+      throw new Error("OpenAI returned no image data");
+    }
+
+    return res.status(200).json({
       success: true,
-      glbBase64
+      imageBase64,
     });
-
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "3D generation failed" });
+    console.error("OPENAI FAILURE:", err);
+    return res.status(500).json({
+      error: "Image generation failed",
+      details: err.message,
+    });
   }
 }
