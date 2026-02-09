@@ -11,97 +11,128 @@ function setCors(res) {
 }
 
 // Helper to parse multipart form data
-async function parseFormData(req) {
+async function parseMultipartFormData(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on('data', chunk => chunks.push(chunk));
-    req.on('end', async () => {
-      const buffer = Buffer.concat(chunks);
-      
-      // Check if it's multipart form data
-      const contentType = req.headers['content-type'] || '';
-      if (!contentType.includes('multipart/form-data')) {
-        // JSON request
-        try {
-          const body = JSON.parse(buffer.toString());
-          resolve(body);
-        } catch (e) {
-          reject(new Error('Invalid JSON'));
+    
+    req.on('data', chunk => {
+      chunks.push(chunk);
+    });
+    
+    req.on('end', () => {
+      try {
+        const buffer = Buffer.concat(chunks);
+        const contentType = req.headers['content-type'] || '';
+        
+        if (!contentType.includes('multipart/form-data')) {
+          // Handle JSON request (fallback)
+          try {
+            const body = JSON.parse(buffer.toString());
+            resolve(body);
+          } catch (e) {
+            reject(new Error('Invalid request format'));
+          }
+          return;
         }
-        return;
-      }
-      
-      // Parse multipart form data
-      const boundary = contentType.split('boundary=')[1];
-      const parts = buffer.toString('binary').split(`--${boundary}`);
-      
-      const result = {};
-      
-      for (const part of parts) {
-        if (part.includes('Content-Disposition')) {
-          const nameMatch = part.match(/name="([^"]+)"/);
-          const filenameMatch = part.match(/filename="([^"]+)"/);
+        
+        // Parse multipart form data
+        const boundary = contentType.split('boundary=')[1];
+        if (!boundary) {
+          reject(new Error('No boundary found'));
+          return;
+        }
+        
+        const parts = buffer.toString('binary').split(`--${boundary}`);
+        const result = {};
+        
+        for (let i = 0; i < parts.length; i++) {
+          const part = parts[i];
           
-          if (nameMatch) {
-            const name = nameMatch[1];
+          if (part.includes('Content-Disposition')) {
+            const nameMatch = part.match(/name="([^"]+)"/);
+            const filenameMatch = part.match(/filename="([^"]+)"/);
             
-            if (filenameMatch) {
-              // File upload
-              const filename = filenameMatch[1];
-              const fileStart = part.indexOf('\r\n\r\n') + 4;
-              const fileEnd = part.lastIndexOf('\r\n');
-              const fileContent = part.substring(fileStart, fileEnd);
+            if (nameMatch) {
+              const name = nameMatch[1];
               
-              // Convert to base64
-              const base64Content = Buffer.from(fileContent, 'binary').toString('base64');
-              
-              result[name] = {
-                filename: filename,
-                data: base64Content,
-                contentType: part.includes('Content-Type:') 
-                  ? part.match(/Content-Type: ([^\r\n]+)/)[1]
-                  : 'application/octet-stream'
-              };
-            } else {
-              // Text field
-              const valueStart = part.indexOf('\r\n\r\n') + 4;
-              const valueEnd = part.lastIndexOf('\r\n');
-              const value = part.substring(valueStart, valueEnd);
-              result[name] = value;
+              if (filenameMatch) {
+                // It's a file upload
+                const filename = filenameMatch[1];
+                
+                // Find where the file content starts (after double CRLF)
+                const headerEnd = part.indexOf('\r\n\r\n');
+                if (headerEnd !== -1) {
+                  const fileStart = headerEnd + 4;
+                  const fileEnd = part.lastIndexOf('\r\n');
+                  if (fileEnd > fileStart) {
+                    const fileContent = part.substring(fileStart, fileEnd);
+                    const base64Content = Buffer.from(fileContent, 'binary').toString('base64');
+                    
+                    result[name] = {
+                      filename: filename,
+                      data: base64Content,
+                      contentType: part.includes('Content-Type:') 
+                        ? part.match(/Content-Type:\s*([^\r\n]+)/)[1]
+                        : 'application/octet-stream'
+                    };
+                  }
+                }
+              } else {
+                // It's a regular form field
+                const headerEnd = part.indexOf('\r\n\r\n');
+                if (headerEnd !== -1) {
+                  const valueStart = headerEnd + 4;
+                  const valueEnd = part.lastIndexOf('\r\n');
+                  if (valueEnd > valueStart) {
+                    const value = part.substring(valueStart, valueEnd);
+                    result[name] = value;
+                  }
+                }
+              }
             }
           }
         }
+        
+        resolve(result);
+      } catch (error) {
+        reject(error);
       }
-      
-      resolve(result);
     });
+    
     req.on('error', reject);
   });
 }
 
-// Function to detect shape from description
-function detectShapeFromDescription(description) {
-  const desc = description.toLowerCase();
-  const shapeKeywords = {
-    'round': ['round', 'circle', 'circular', 'coin', 'medal'],
-    'square': ['square', 'box', 'rectangular'],
-    'triangle': ['triangle', 'triangular', 'pyramid'],
-    'star': ['star', 'star-shaped'],
-    'heart': ['heart', 'heart-shaped'],
-    'oval': ['oval', 'elliptical', 'ellipse'],
-    'crocodile': ['crocodile', 'alligator', 'reptile'],
-    'dragon': ['dragon', 'mythical'],
-    'shield': ['shield', 'kite', 'heater'],
-    'custom': ['custom', 'unique', 'special']
-  };
-
-  for (const [shape, keywords] of Object.entries(shapeKeywords)) {
-    if (keywords.some(keyword => desc.includes(keyword))) {
-      return shape;
-    }
+// Function to analyze image and extract description
+async function analyzeImageWithOpenAI(imageBase64) {
+  try {
+    // For now, we'll just use a placeholder since GPT-4 Vision requires a different approach
+    // In production, you'd use:
+    // const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    //   method: 'POST',
+    //   headers: {
+    //     'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+    //     'Content-Type': 'application/json',
+    //   },
+    //   body: JSON.stringify({
+    //     model: "gpt-4-vision-preview",
+    //     messages: [{
+    //       role: "user",
+    //       content: [
+    //         { type: "text", text: "Describe this image in detail for coin design generation." },
+    //         { type: "image_url", image_url: { url: `data:image/png;base64,${imageBase64}` } }
+    //       ]
+    //     }],
+    //     max_tokens: 300
+    //   })
+    // });
+    
+    // For now, return a placeholder
+    return "Based on the uploaded reference image, create a detailed coin design that matches the style, patterns, and elements shown in the image.";
+  } catch (error) {
+    console.error('Image analysis error:', error);
+    return "Using the uploaded image as reference for the coin design.";
   }
-  
-  return 'round';
 }
 
 export default async function handler(req, res) {
@@ -117,94 +148,107 @@ export default async function handler(req, res) {
 
   try {
     // Parse form data
-    const formData = await parseFormData(req);
+    const formData = await parseMultipartFormData(req);
     
-    const { description, engraving, shapeType } = formData;
+    const description = formData.description;
     const imageData = formData.image;
-
-    if (!description) {
-      return res.status(400).json({ error: "Description is required" });
+    
+    if (!description || typeof description !== 'string' || description.trim().length === 0) {
+      return res.status(400).json({ 
+        success: false,
+        error: "Description is required"
+      });
     }
 
-    // Determine final shape
-    let finalShape = shapeType || detectShapeFromDescription(description);
+    // Build the prompt
+    let prompt = description.trim();
     
-    // Build the prompt - focusing on clean coin design
-    let prompt = `
-Create a clean, professional ${finalShape}-shaped coin design based on the following description:
-"${description}"
-
-IMPORTANT INSTRUCTIONS:
-1. Generate ONLY the coin design itself
-2. NO background - use pure white background
-3. NO text like "commemorative coin" or any labels
-4. NO studio lighting effects
-5. Coin should be metallic looking
-6. Design should fill most of the canvas
-7. Keep it simple and elegant
-
-${engraving ? `Include this engraving text: "${engraving}"` : ''}
-${imageData ? 'Use the uploaded image as reference for the design style.' : ''}
-
-The output should be a clean, standalone coin design on white background, ready for 3D rendering.
-`;
-
-    console.log("Generated prompt:", prompt);
-
-    // Prepare request body for OpenAI
-    const requestBody = {
-      model: "dall-e-3",
-      prompt: prompt,
-      size: "1024x1024",
-      quality: "hd",
-      n: 1,
-      style: "natural"
-    };
-
-    const response = await fetch(
-      "https://api.openai.com/v1/images/generations",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify(requestBody),
+    // If there's an image, include it in the prompt
+    if (imageData && imageData.data) {
+      try {
+        // Analyze the image to understand its content
+        const imageAnalysis = await analyzeImageWithOpenAI(imageData.data);
+        
+        // Construct a detailed prompt that combines the description and image analysis
+        prompt = `Create a detailed coin design based on this description: "${description}"
+        
+        Important Reference from uploaded image: ${imageAnalysis}
+        
+        IMPORTANT REQUIREMENTS:
+        1. Create ONLY the coin design itself
+        2. Pure white background - NO background elements
+        3. NO text labels or watermarks
+        4. NO studio lighting effects or shadows
+        5. The coin should be centered
+        6. Design should be clear and detailed
+        7. Make it look like a real metal coin
+        8. The design should match the reference image style closely
+        
+        Output a clean, professional coin design on white background.`;
+      } catch (imgError) {
+        console.error('Image processing error:', imgError);
+        // Fallback to simple prompt
+        prompt = `Create a coin design based on: "${description}"
+        Using the uploaded image as reference. White background only, no text labels.`;
       }
-    );
+    } else {
+      // No image, just description
+      prompt = `Create a detailed coin design based on: "${description}"
+      
+      IMPORTANT REQUIREMENTS:
+      1. Create ONLY the coin design itself
+      2. Pure white background - NO background elements
+      3. NO text labels like "commemorative coin" or watermarks
+      4. NO studio lighting effects or shadows
+      5. The coin should be centered
+      6. Design should be clear and detailed
+      7. Make it look like a real metal coin
+      8. Consider the shape described (round, star, animal, etc.)
+      
+      Output a clean, professional coin design on white background.`;
+    }
+
+    console.log('Generated Prompt:', prompt.substring(0, 200) + '...');
+
+    // Call OpenAI API
+    const response = await fetch('https://api.openai.com/v1/images/generations', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "dall-e-3",
+        prompt: prompt,
+        size: "1024x1024",
+        quality: "standard",
+        n: 1,
+        style: "natural",
+        response_format: "b64_json"
+      }),
+    });
 
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("OpenAI API error:", data);
-      throw new Error(data.error?.message || "OpenAI request failed");
+      console.error('OpenAI API error:', data);
+      throw new Error(data.error?.message || 'OpenAI request failed');
     }
 
-    // For DALL-E 3
-    const imageUrl = data?.data?.[0]?.url;
+    const imageBase64 = data?.data?.[0]?.b64_json;
     
-    if (!imageUrl) {
-      throw new Error("OpenAI returned no image data");
+    if (!imageBase64) {
+      throw new Error('No image data received from OpenAI');
     }
-
-    // Download the image and convert to base64
-    const imageResponse = await fetch(imageUrl);
-    if (!imageResponse.ok) {
-      throw new Error("Failed to download generated image");
-    }
-    
-    const imageBuffer = await imageResponse.arrayBuffer();
-    const imageBase64 = Buffer.from(imageBuffer).toString('base64');
 
     return res.status(200).json({
       success: true,
       imageBase64: imageBase64,
-      shape: finalShape,
-      promptUsed: prompt.substring(0, 200) + "..." // Truncated for response
+      promptUsed: prompt.substring(0, 300) + '...'
     });
 
   } catch (err) {
-    console.error("Generation error:", err);
+    console.error('Generation error:', err);
     return res.status(500).json({
       success: false,
       error: "Image generation failed",
