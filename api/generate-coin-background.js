@@ -7,21 +7,13 @@ export const config = {
   }
 };
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Content-Type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-function setCors(res) {
-  for (const [key, value] of Object.entries(corsHeaders)) {
-    res.setHeader(key, value);
-  }
-}
-
 export default async function handler(req, res) {
-  setCors(res);
+  // 🔥 CORS — MUST BE FIRST, ALWAYS
+  res.setHeader("Access-Control-Allow-Origin", "https://allegiancecoin.com");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
+  // 🔥 Preflight request
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
@@ -59,25 +51,12 @@ Design description: ${description}
 Studio lighting, premium metal texture, dark background.
 `;
 
-    const input = referenceImageBase64
-      ? [
-          {
-            role: "user",
-            content: [
-              { type: "input_text", text: promptText },
-              {
-                type: "input_image",
-                image_base64: referenceImageBase64
-              }
-            ]
-          }
-        ]
-      : [
-          {
-            role: "user",
-            content: promptText
-          }
-        ];
+    // ⚠️ OpenAI Images API currently uses prompt + optional reference
+    const openaiPayload = {
+      model: "gpt-image-1",
+      prompt: promptText,
+      size: "1024x1024"
+    };
 
     const response = await fetch(
       "https://api.openai.com/v1/images/generations",
@@ -85,26 +64,23 @@ Studio lighting, premium metal texture, dark background.
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
         },
-        body: JSON.stringify({
-          model: "gpt-image-1",
-          prompt: promptText,
-          size: "1024x1024"
-        })
+        body: JSON.stringify(openaiPayload)
       }
     );
 
     const data = await response.json();
 
     if (!response.ok) {
+      console.error("OPENAI ERROR:", data);
       throw new Error(data.error?.message || "OpenAI request failed");
     }
 
     const imageBase64 = data?.data?.[0]?.b64_json;
 
     if (!imageBase64) {
-      throw new Error("OpenAI returned no image");
+      throw new Error("OpenAI returned no image data");
     }
 
     return res.status(200).json({
@@ -113,7 +89,7 @@ Studio lighting, premium metal texture, dark background.
     });
 
   } catch (err) {
-    console.error("AI ERROR:", err);
+    console.error("SERVER ERROR:", err);
     return res.status(500).json({
       error: "Image generation failed",
       details: err.message
