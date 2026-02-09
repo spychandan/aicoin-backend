@@ -25,7 +25,6 @@ async function parseMultipartFormData(req) {
         const contentType = req.headers['content-type'] || '';
         
         if (!contentType.includes('multipart/form-data')) {
-          // Handle JSON request (fallback)
           try {
             const body = JSON.parse(buffer.toString());
             resolve(body);
@@ -35,7 +34,6 @@ async function parseMultipartFormData(req) {
           return;
         }
         
-        // Parse multipart form data
         const boundary = contentType.split('boundary=')[1];
         if (!boundary) {
           reject(new Error('No boundary found'));
@@ -56,10 +54,7 @@ async function parseMultipartFormData(req) {
               const name = nameMatch[1];
               
               if (filenameMatch) {
-                // It's a file upload
                 const filename = filenameMatch[1];
-                
-                // Find where the file content starts (after double CRLF)
                 const headerEnd = part.indexOf('\r\n\r\n');
                 if (headerEnd !== -1) {
                   const fileStart = headerEnd + 4;
@@ -78,7 +73,6 @@ async function parseMultipartFormData(req) {
                   }
                 }
               } else {
-                // It's a regular form field
                 const headerEnd = part.indexOf('\r\n\r\n');
                 if (headerEnd !== -1) {
                   const valueStart = headerEnd + 4;
@@ -115,7 +109,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Parse form data
     const formData = await parseMultipartFormData(req);
     
     const description = formData.description;
@@ -128,75 +121,64 @@ export default async function handler(req, res) {
       });
     }
 
-    // Build the prompt
-    let prompt = description.trim();
+    // CRITICAL: Use the simple, effective prompt that was working
+    let prompt = `Highly realistic single commemorative coin`;
     
-    // If there's an image, include it in the prompt
+    // Add description
+    prompt += ` featuring: ${description}.`;
+    
+    // If image is provided, mention it
     if (imageData && imageData.data) {
-      // Construct a detailed prompt that references the uploaded image
-      prompt = `Create a detailed coin design based on this description: "${description}"
-
-      IMPORTANT: Use the uploaded image as exact reference for the design.
-      
-      CRITICAL REQUIREMENTS:
-      1. Create ONLY the coin design itself - no background
-      2. Pure white background - NO background elements, shadows, or gradients
-      3. NO text labels like "commemorative coin" or any text unless specified in description
-      4. NO studio lighting effects
-      5. The coin should be perfectly centered
-      6. Match the style, patterns, and elements from the uploaded image closely
-      7. Make it look like a real metal coin with proper details
-      8. Output should be clean and ready for 3D rendering
-      
-      The uploaded image contains the exact design reference.`;
-    } else {
-      // No image, just description
-      prompt = `Create a detailed coin design based on: "${description}"
-      
-      CRITICAL REQUIREMENTS:
-      1. Create ONLY the coin design itself - no background
-      2. Pure white background - NO background elements, shadows, or gradients
-      3. NO text labels like "commemorative coin" or any text unless specified in description
-      4. NO studio lighting effects
-      5. The coin should be perfectly centered
-      6. Design should be clear and detailed
-      7. Make it look like a real metal coin with proper details
-      8. Output should be clean and ready for 3D rendering
-      
-      IMPORTANT: Do NOT add any text unless explicitly specified in the description.`;
+      prompt += ` Use the uploaded reference image as inspiration.`;
     }
+    
+    // Add the key specifications that were working before
+    prompt += ` Studio lighting, premium metal texture, dark background, centered composition, single coin only, no text labels.`;
+    
+    console.log('Prompt:', prompt);
 
-    console.log('Generated Prompt:', prompt.substring(0, 200) + '...');
+    // Try DALL-E 3 first, fall back to DALL-E 2 if needed
+    const models = ["dall-e-3", "dall-e-2"];
+    let imageBase64 = null;
+    let lastError = null;
+    
+    for (const model of models) {
+      try {
+        const response = await fetch('https://api.openai.com/v1/images/generations', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: model,
+            prompt: prompt,
+            size: model === "dall-e-3" ? "1024x1024" : "1024x1024",
+            quality: "standard",
+            n: 1,
+            style: "natural",
+            response_format: "b64_json"
+          }),
+        });
 
-    // Call OpenAI API
-    const response = await fetch('https://api.openai.com/v1/images/generations', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "dall-e-3",
-        prompt: prompt,
-        size: "1024x1024",
-        quality: "standard",
-        n: 1,
-        style: "natural",
-        response_format: "b64_json"
-      }),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      console.error('OpenAI API error:', data);
-      throw new Error(data.error?.message || 'OpenAI request failed');
+        const data = await response.json();
+        
+        if (response.ok && data?.data?.[0]?.b64_json) {
+          imageBase64 = data.data[0].b64_json;
+          console.log(`Successfully generated image with ${model}`);
+          break;
+        } else {
+          lastError = data.error?.message || `Failed with ${model}`;
+          console.log(`Failed with ${model}:`, lastError);
+        }
+      } catch (error) {
+        lastError = error.message;
+        console.log(`Error with ${model}:`, error.message);
+      }
     }
-
-    const imageBase64 = data?.data?.[0]?.b64_json;
     
     if (!imageBase64) {
-      throw new Error('No image data received from OpenAI');
+      throw new Error(lastError || 'All model attempts failed');
     }
 
     return res.status(200).json({
