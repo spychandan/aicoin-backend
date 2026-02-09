@@ -1,7 +1,6 @@
 import formidable from "formidable";
 import fs from "fs";
 
-export const runtime = "nodejs"; // 🔥 REQUIRED
 export const config = {
   api: {
     bodyParser: false
@@ -9,12 +8,12 @@ export const config = {
 };
 
 export default async function handler(req, res) {
-  // 🔥 CORS MUST BE FIRST
+  // ✅ CORS — ALWAYS FIRST
   res.setHeader("Access-Control-Allow-Origin", "https://allegiancecoin.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  // 🔥 Preflight
+  // ✅ Handle preflight
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
@@ -39,7 +38,7 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Description is required" });
     }
 
-    // Optional reference file (currently unused by OpenAI image gen)
+    // Optional file — safely ignored for now
     if (files.reference) {
       fs.readFileSync(files.reference.filepath);
     }
@@ -50,7 +49,7 @@ Design description: ${description}
 Studio lighting, premium metal texture, dark background.
 `;
 
-    const response = await fetch(
+    const openaiRes = await fetch(
       "https://api.openai.com/v1/images/generations",
       {
         method: "POST",
@@ -66,16 +65,16 @@ Studio lighting, premium metal texture, dark background.
       }
     );
 
-    const data = await response.json();
+    const data = await openaiRes.json();
 
-    if (!response.ok) {
-      throw new Error(data.error?.message || "OpenAI request failed");
+    if (!openaiRes.ok) {
+      throw new Error(data.error?.message || "OpenAI failed");
     }
 
     const imageBase64 = data?.data?.[0]?.b64_json;
 
     if (!imageBase64) {
-      throw new Error("No image returned from OpenAI");
+      throw new Error("No image returned");
     }
 
     return res.status(200).json({
