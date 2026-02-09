@@ -21,7 +21,7 @@ async function parseFormData(req) {
       // Check if it's multipart form data
       const contentType = req.headers['content-type'] || '';
       if (!contentType.includes('multipart/form-data')) {
-        // JSON request (for backward compatibility)
+        // JSON request
         try {
           const body = JSON.parse(buffer.toString());
           resolve(body);
@@ -79,6 +79,31 @@ async function parseFormData(req) {
   });
 }
 
+// Function to detect shape from description
+function detectShapeFromDescription(description) {
+  const desc = description.toLowerCase();
+  const shapeKeywords = {
+    'round': ['round', 'circle', 'circular', 'coin', 'medal'],
+    'square': ['square', 'box', 'rectangular'],
+    'triangle': ['triangle', 'triangular', 'pyramid'],
+    'star': ['star', 'star-shaped'],
+    'heart': ['heart', 'heart-shaped'],
+    'oval': ['oval', 'elliptical', 'ellipse'],
+    'crocodile': ['crocodile', 'alligator', 'reptile'],
+    'dragon': ['dragon', 'mythical'],
+    'shield': ['shield', 'kite', 'heater'],
+    'custom': ['custom', 'unique', 'special']
+  };
+
+  for (const [shape, keywords] of Object.entries(shapeKeywords)) {
+    if (keywords.some(keyword => desc.includes(keyword))) {
+      return shape;
+    }
+  }
+  
+  return 'round';
+}
+
 export default async function handler(req, res) {
   setCors(res);
 
@@ -91,46 +116,50 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Parse form data (supports both JSON and multipart)
+    // Parse form data
     const formData = await parseFormData(req);
     
-    const { description, engraving } = formData;
-    const imageData = formData.image; // Could be base64 string or file object
+    const { description, engraving, shapeType } = formData;
+    const imageData = formData.image;
 
     if (!description) {
       return res.status(400).json({ error: "Description is required" });
     }
 
-    // Build the prompt
+    // Determine final shape
+    let finalShape = shapeType || detectShapeFromDescription(description);
+    
+    // Build the prompt - focusing on clean coin design
     let prompt = `
-Highly realistic custom commemorative coin.
-Design concept: ${description}
-${engraving ? `Engraving text: ${engraving}` : 'No engraving text'}
-Professional studio lighting, premium metal texture, dark background, highly detailed, 8k resolution.
+Create a clean, professional ${finalShape}-shaped coin design based on the following description:
+"${description}"
+
+IMPORTANT INSTRUCTIONS:
+1. Generate ONLY the coin design itself
+2. NO background - use pure white background
+3. NO text like "commemorative coin" or any labels
+4. NO studio lighting effects
+5. Coin should be metallic looking
+6. Design should fill most of the canvas
+7. Keep it simple and elegant
+
+${engraving ? `Include this engraving text: "${engraving}"` : ''}
+${imageData ? 'Use the uploaded image as reference for the design style.' : ''}
+
+The output should be a clean, standalone coin design on white background, ready for 3D rendering.
 `;
+
+    console.log("Generated prompt:", prompt);
 
     // Prepare request body for OpenAI
     const requestBody = {
       model: "dall-e-3",
       prompt: prompt,
       size: "1024x1024",
-      quality: "standard",
-      n: 1
+      quality: "hd",
+      n: 1,
+      style: "natural"
     };
-
-    // If image is provided, we need to use the images.createVariation endpoint
-    // Note: DALL-E 3 doesn't support image variations in the same way as DALL-E 2
-    // We'll use the prompt with optional image reference in the description
-    if (imageData) {
-      // Add reference to uploaded image in the prompt
-      prompt = `Based on the reference image provided, create: ${prompt}`;
-      requestBody.prompt = prompt;
-      
-      // For DALL-E 2, we could use image variation, but for DALL-E 3 we include in prompt
-      console.log("Image uploaded, filename:", imageData.filename || "reference image");
-    }
-
-    console.log("Sending prompt to OpenAI:", prompt);
 
     const response = await fetch(
       "https://api.openai.com/v1/images/generations",
@@ -151,7 +180,7 @@ Professional studio lighting, premium metal texture, dark background, highly det
       throw new Error(data.error?.message || "OpenAI request failed");
     }
 
-    // For DALL-E 3, the response structure is different
+    // For DALL-E 3
     const imageUrl = data?.data?.[0]?.url;
     
     if (!imageUrl) {
@@ -160,13 +189,18 @@ Professional studio lighting, premium metal texture, dark background, highly det
 
     // Download the image and convert to base64
     const imageResponse = await fetch(imageUrl);
+    if (!imageResponse.ok) {
+      throw new Error("Failed to download generated image");
+    }
+    
     const imageBuffer = await imageResponse.arrayBuffer();
     const imageBase64 = Buffer.from(imageBuffer).toString('base64');
 
     return res.status(200).json({
       success: true,
       imageBase64: imageBase64,
-      promptUsed: prompt
+      shape: finalShape,
+      promptUsed: prompt.substring(0, 200) + "..." // Truncated for response
     });
 
   } catch (err) {
