@@ -103,38 +103,6 @@ async function parseMultipartFormData(req) {
   });
 }
 
-// Function to analyze image and extract description
-async function analyzeImageWithOpenAI(imageBase64) {
-  try {
-    // For now, we'll just use a placeholder since GPT-4 Vision requires a different approach
-    // In production, you'd use:
-    // const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    //   method: 'POST',
-    //   headers: {
-    //     'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-    //     'Content-Type': 'application/json',
-    //   },
-    //   body: JSON.stringify({
-    //     model: "gpt-4-vision-preview",
-    //     messages: [{
-    //       role: "user",
-    //       content: [
-    //         { type: "text", text: "Describe this image in detail for coin design generation." },
-    //         { type: "image_url", image_url: { url: `data:image/png;base64,${imageBase64}` } }
-    //       ]
-    //     }],
-    //     max_tokens: 300
-    //   })
-    // });
-    
-    // For now, return a placeholder
-    return "Based on the uploaded reference image, create a detailed coin design that matches the style, patterns, and elements shown in the image.";
-  } catch (error) {
-    console.error('Image analysis error:', error);
-    return "Using the uploaded image as reference for the coin design.";
-  }
-}
-
 export default async function handler(req, res) {
   setCors(res);
 
@@ -165,47 +133,37 @@ export default async function handler(req, res) {
     
     // If there's an image, include it in the prompt
     if (imageData && imageData.data) {
-      try {
-        // Analyze the image to understand its content
-        const imageAnalysis = await analyzeImageWithOpenAI(imageData.data);
-        
-        // Construct a detailed prompt that combines the description and image analysis
-        prompt = `Create a detailed coin design based on this description: "${description}"
-        
-        Important Reference from uploaded image: ${imageAnalysis}
-        
-        IMPORTANT REQUIREMENTS:
-        1. Create ONLY the coin design itself
-        2. Pure white background - NO background elements
-        3. NO text labels or watermarks
-        4. NO studio lighting effects or shadows
-        5. The coin should be centered
-        6. Design should be clear and detailed
-        7. Make it look like a real metal coin
-        8. The design should match the reference image style closely
-        
-        Output a clean, professional coin design on white background.`;
-      } catch (imgError) {
-        console.error('Image processing error:', imgError);
-        // Fallback to simple prompt
-        prompt = `Create a coin design based on: "${description}"
-        Using the uploaded image as reference. White background only, no text labels.`;
-      }
+      // Construct a detailed prompt that references the uploaded image
+      prompt = `Create a detailed coin design based on this description: "${description}"
+
+      IMPORTANT: Use the uploaded image as exact reference for the design.
+      
+      CRITICAL REQUIREMENTS:
+      1. Create ONLY the coin design itself - no background
+      2. Pure white background - NO background elements, shadows, or gradients
+      3. NO text labels like "commemorative coin" or any text unless specified in description
+      4. NO studio lighting effects
+      5. The coin should be perfectly centered
+      6. Match the style, patterns, and elements from the uploaded image closely
+      7. Make it look like a real metal coin with proper details
+      8. Output should be clean and ready for 3D rendering
+      
+      The uploaded image contains the exact design reference.`;
     } else {
       // No image, just description
       prompt = `Create a detailed coin design based on: "${description}"
       
-      IMPORTANT REQUIREMENTS:
-      1. Create ONLY the coin design itself
-      2. Pure white background - NO background elements
-      3. NO text labels like "commemorative coin" or watermarks
-      4. NO studio lighting effects or shadows
-      5. The coin should be centered
+      CRITICAL REQUIREMENTS:
+      1. Create ONLY the coin design itself - no background
+      2. Pure white background - NO background elements, shadows, or gradients
+      3. NO text labels like "commemorative coin" or any text unless specified in description
+      4. NO studio lighting effects
+      5. The coin should be perfectly centered
       6. Design should be clear and detailed
-      7. Make it look like a real metal coin
-      8. Consider the shape described (round, star, animal, etc.)
+      7. Make it look like a real metal coin with proper details
+      8. Output should be clean and ready for 3D rendering
       
-      Output a clean, professional coin design on white background.`;
+      IMPORTANT: Do NOT add any text unless explicitly specified in the description.`;
     }
 
     console.log('Generated Prompt:', prompt.substring(0, 200) + '...');
@@ -243,8 +201,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       success: true,
-      imageBase64: imageBase64,
-      promptUsed: prompt.substring(0, 300) + '...'
+      imageBase64: imageBase64
     });
 
   } catch (err) {
