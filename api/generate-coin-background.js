@@ -1,3 +1,12 @@
+import formidable from "formidable";
+import fs from "fs";
+
+export const config = {
+  api: {
+    bodyParser: false
+  }
+};
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type",
@@ -22,20 +31,53 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { description, shape, finish, engraving } = req.body ?? {};
+    const form = formidable({ multiples: false });
+
+    const { fields, files } = await new Promise((resolve, reject) => {
+      form.parse(req, (err, fields, files) => {
+        if (err) reject(err);
+        resolve({ fields, files });
+      });
+    });
+
+    const description = fields.description;
 
     if (!description) {
       return res.status(400).json({ error: "Description is required" });
     }
 
-    const prompt = `
+    let referenceImageBase64 = null;
+
+    if (files.reference) {
+      const buffer = fs.readFileSync(files.reference.filepath);
+      referenceImageBase64 = buffer.toString("base64");
+    }
+
+    const promptText = `
 Highly realistic custom commemorative coin.
-Shape: ${shape || "custom"}
-Material finish: ${finish || "gold"}
-Engraving: ${engraving || "none"}
-Design: ${description}
-Studio lighting, premium metal texture, dark background
+Design description: ${description}
+Studio lighting, premium metal texture, dark background.
 `;
+
+    const input = referenceImageBase64
+      ? [
+          {
+            role: "user",
+            content: [
+              { type: "input_text", text: promptText },
+              {
+                type: "input_image",
+                image_base64: referenceImageBase64
+              }
+            ]
+          }
+        ]
+      : [
+          {
+            role: "user",
+            content: promptText
+          }
+        ];
 
     const response = await fetch(
       "https://api.openai.com/v1/images/generations",
@@ -47,15 +89,13 @@ Studio lighting, premium metal texture, dark background
         },
         body: JSON.stringify({
           model: "gpt-image-1",
-          prompt,
-          size: "1024x1024",
-        }),
+          prompt: promptText,
+          size: "1024x1024"
+        })
       }
     );
 
     const data = await response.json();
-
-    console.log("OPENAI RAW RESPONSE:", JSON.stringify(data));
 
     if (!response.ok) {
       throw new Error(data.error?.message || "OpenAI request failed");
@@ -64,18 +104,19 @@ Studio lighting, premium metal texture, dark background
     const imageBase64 = data?.data?.[0]?.b64_json;
 
     if (!imageBase64) {
-      throw new Error("OpenAI returned no image data");
+      throw new Error("OpenAI returned no image");
     }
 
     return res.status(200).json({
       success: true,
-      imageBase64,
+      imageBase64
     });
+
   } catch (err) {
-    console.error("OPENAI FAILURE:", err);
+    console.error("AI ERROR:", err);
     return res.status(500).json({
       error: "Image generation failed",
-      details: err.message,
+      details: err.message
     });
   }
 }
