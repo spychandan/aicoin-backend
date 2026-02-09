@@ -1,6 +1,7 @@
 import formidable from "formidable";
 import fs from "fs";
 
+export const runtime = "nodejs"; // 🔥 REQUIRED
 export const config = {
   api: {
     bodyParser: false
@@ -8,12 +9,12 @@ export const config = {
 };
 
 export default async function handler(req, res) {
-  // 🔥 CORS — MUST BE FIRST, ALWAYS
+  // 🔥 CORS MUST BE FIRST
   res.setHeader("Access-Control-Allow-Origin", "https://allegiancecoin.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  // 🔥 Preflight request
+  // 🔥 Preflight
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
@@ -38,25 +39,16 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Description is required" });
     }
 
-    let referenceImageBase64 = null;
-
+    // Optional reference file (currently unused by OpenAI image gen)
     if (files.reference) {
-      const buffer = fs.readFileSync(files.reference.filepath);
-      referenceImageBase64 = buffer.toString("base64");
+      fs.readFileSync(files.reference.filepath);
     }
 
-    const promptText = `
+    const prompt = `
 Highly realistic custom commemorative coin.
 Design description: ${description}
 Studio lighting, premium metal texture, dark background.
 `;
-
-    // ⚠️ OpenAI Images API currently uses prompt + optional reference
-    const openaiPayload = {
-      model: "gpt-image-1",
-      prompt: promptText,
-      size: "1024x1024"
-    };
 
     const response = await fetch(
       "https://api.openai.com/v1/images/generations",
@@ -66,21 +58,24 @@ Studio lighting, premium metal texture, dark background.
           "Content-Type": "application/json",
           Authorization: `Bearer ${process.env.OPENAI_API_KEY}`
         },
-        body: JSON.stringify(openaiPayload)
+        body: JSON.stringify({
+          model: "gpt-image-1",
+          prompt,
+          size: "1024x1024"
+        })
       }
     );
 
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("OPENAI ERROR:", data);
       throw new Error(data.error?.message || "OpenAI request failed");
     }
 
     const imageBase64 = data?.data?.[0]?.b64_json;
 
     if (!imageBase64) {
-      throw new Error("OpenAI returned no image data");
+      throw new Error("No image returned from OpenAI");
     }
 
     return res.status(200).json({
