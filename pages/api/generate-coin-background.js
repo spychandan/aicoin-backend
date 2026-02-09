@@ -1,5 +1,4 @@
-import formidable from "formidable";
-import fs from "fs";
+export const runtime = "nodejs";
 
 export const config = {
   api: {
@@ -8,12 +7,15 @@ export const config = {
 };
 
 export default async function handler(req, res) {
-  // ✅ CORS — ALWAYS FIRST
+  // ---------- CORS (FIRST, ALWAYS) ----------
   res.setHeader("Access-Control-Allow-Origin", "https://allegiancecoin.com");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization"
+  );
 
-  // ✅ Handle preflight
+  // ---------- PREFLIGHT ----------
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
@@ -23,9 +25,12 @@ export default async function handler(req, res) {
   }
 
   try {
+    // 🔥 Import ONLY when needed (Vercel-safe)
+    const formidable = (await import("formidable")).default;
+
     const form = formidable({ multiples: false });
 
-    const { fields, files } = await new Promise((resolve, reject) => {
+    const { fields } = await new Promise((resolve, reject) => {
       form.parse(req, (err, fields, files) => {
         if (err) reject(err);
         resolve({ fields, files });
@@ -36,11 +41,6 @@ export default async function handler(req, res) {
 
     if (!description) {
       return res.status(400).json({ error: "Description is required" });
-    }
-
-    // Optional file — safely ignored for now
-    if (files.reference) {
-      fs.readFileSync(files.reference.filepath);
     }
 
     const prompt = `
@@ -68,13 +68,13 @@ Studio lighting, premium metal texture, dark background.
     const data = await openaiRes.json();
 
     if (!openaiRes.ok) {
-      throw new Error(data.error?.message || "OpenAI failed");
+      throw new Error(data?.error?.message || "OpenAI request failed");
     }
 
     const imageBase64 = data?.data?.[0]?.b64_json;
 
     if (!imageBase64) {
-      throw new Error("No image returned");
+      throw new Error("No image returned from OpenAI");
     }
 
     return res.status(200).json({
