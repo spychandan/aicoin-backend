@@ -50,7 +50,7 @@ export default async function handler(req, res) {
       const dataUrl = `data:${imageFile.mimetype};base64,${base64Image}`;
 
       const visionResponse = await openai.chat.completions.create({
-        model: 'gpt-4-vision-preview',
+        model: 'gpt-4o',
         messages: [
           {
             role: 'system',
@@ -77,7 +77,7 @@ export default async function handler(req, res) {
     } else {
       // --- Case B: No image → Use GPT‑4 to enrich the description ---
       const textResponse = await openai.chat.completions.create({
-        model: 'gpt-4-turbo-preview', // or 'gpt-3.5-turbo' for lower cost
+        model: 'gpt-4o', // or 'gpt-3.5-turbo' for lower cost
         messages: [
           {
             role: 'system',
