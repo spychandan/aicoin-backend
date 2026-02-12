@@ -8,7 +8,8 @@
   "dependencies": {
     "canvas": "^3.2.1",
     "gltf-pipeline": "^4.3.0",
-    "openai": "^4.0.0",
+    "multer": "^2.0.2",
+    "openai": "^4.104.0",
     "potrace": "^2.1.8",
     "sharp": "^0.34.5",
     "three": "^0.182.0",
