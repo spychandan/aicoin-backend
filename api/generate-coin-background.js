@@ -3,18 +3,13 @@ import multer from 'multer';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Configure multer for multiple files
+// Configure multer for multiple files under one field 'images'
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB per file
 });
 
-// Middleware to parse fields: frontImage, backImage, sideImage (optional)
-const multerMiddleware = upload.fields([
-  { name: 'frontImage', maxCount: 1 },
-  { name: 'backImage', maxCount: 1 },
-  { name: 'sideImage', maxCount: 1 },
-]);
+const multerMiddleware = upload.array('images', 5); // max 5 images
 
 function runMiddleware(req, res, fn) {
   return new Promise((resolve, reject) => {
@@ -41,17 +36,21 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Both front and back descriptions are required' });
     }
 
-    // Get uploaded files
-    const frontImageFile = req.files?.frontImage?.[0];
-    const backImageFile = req.files?.backImage?.[0];
-    const sideImageFile = req.files?.sideImage?.[0]; // optional, can be used for both sides or ignored
+    const imageFiles = req.files || []; // array of uploaded files
 
-    // Helper to generate prompt for a single side
-    async function generatePrompt(side, description, imageFile, additionalContext = '') {
-      if (imageFile) {
-        // Use GPT-4V with reference image
-        const base64 = imageFile.buffer.toString('base64');
-        const dataUrl = `data:${imageFile.mimetype};base64,${base64}`;
+    // Helper to build a prompt with optional image references
+    async function generatePrompt(side, description, additionalContext = '') {
+      let userContent = `Description: ${description}. Shape: ${shape}. ${additionalContext}`;
+
+      if (imageFiles.length > 0) {
+        // Include all reference images in the prompt (up to 3 to stay within token limits)
+        const imageContents = await Promise.all(
+          imageFiles.slice(0, 3).map(async (file) => {
+            const base64 = file.buffer.toString('base64');
+            const dataUrl = `data:${file.mimetype};base64,${base64}`;
+            return { type: 'image_url', image_url: { url: dataUrl, detail: 'low' } }; // low detail to save tokens
+          })
+        );
 
         const visionResponse = await openai.chat.completions.create({
           model: 'gpt-4o',
@@ -59,7 +58,7 @@ export default async function handler(req, res) {
             {
               role: 'system',
               content: `You are an expert coin designer. Create a DALL·E 3 prompt for the ${side} of a coin.
-              - Analyze the reference image and the user's description.
+              - Analyze any reference images and the user's description.
               - The coin must be metallic, 3D, centered, with sharp details.
               - Include metal texture, edge details, denomination or text if any.
               - Output ONLY the prompt – no extra text.`,
@@ -67,8 +66,8 @@ export default async function handler(req, res) {
             {
               role: 'user',
               content: [
-                { type: 'text', text: `Description: ${description}. Shape: ${shape}. ${additionalContext}` },
-                { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
+                { type: 'text', text: userContent },
+                ...imageContents,
               ],
             },
           ],
@@ -77,7 +76,7 @@ export default async function handler(req, res) {
         });
         return visionResponse.choices[0].message.content.trim();
       } else {
-        // Text-only GPT-4 prompt
+        // Text-only
         const textResponse = await openai.chat.completions.create({
           model: 'gpt-4o',
           messages: [
@@ -89,10 +88,7 @@ export default async function handler(req, res) {
               - Describe shape, symbols, inscriptions, edge style, and finish.
               - Output ONLY the prompt.`,
             },
-            {
-              role: 'user',
-              content: `Description: ${description}. Shape: ${shape}. ${additionalContext}`,
-            },
+            { role: 'user', content: userContent },
           ],
           max_tokens: 400,
           temperature: 0.7,
@@ -101,10 +97,10 @@ export default async function handler(req, res) {
       }
     }
 
-    // Generate prompts for front and back (possibly using side image as extra reference)
+    // Generate prompts for front and back (both get all reference images)
     const [frontPrompt, backPrompt] = await Promise.all([
-      generatePrompt('front', frontDesc, frontImageFile, sideImageFile ? 'Use side reference for overall form.' : ''),
-      generatePrompt('back', backDesc, backImageFile, sideImageFile ? 'Use side reference for overall form.' : ''),
+      generatePrompt('front', frontDesc),
+      generatePrompt('back', backDesc),
     ]);
 
     // Generate both images concurrently
@@ -133,7 +129,7 @@ export default async function handler(req, res) {
       success: true,
       frontImageBase64: frontImageRes.data[0].b64_json,
       backImageBase64: backImageRes.data[0].b64_json,
-      shape, // pass back for frontend 3D
+      shape,
     });
   } catch (error) {
     console.error('Coin generation error:', error);
