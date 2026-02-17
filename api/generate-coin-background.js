@@ -1,19 +1,20 @@
 import OpenAI from 'openai';
 import multer from 'multer';
 
-// Initialize OpenAI
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY, // set in Vercel environment variables
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Configure multer (memory storage, 5MB limit)
+// Configure multer for multiple files
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB per file
 });
 
-// Promisify multer for serverless environment
-const multerMiddleware = upload.single('image');
+// Middleware to parse fields: frontImage, backImage, sideImage (optional)
+const multerMiddleware = upload.fields([
+  { name: 'frontImage', maxCount: 1 },
+  { name: 'backImage', maxCount: 1 },
+  { name: 'sideImage', maxCount: 1 },
+]);
 
 function runMiddleware(req, res, fn) {
   return new Promise((resolve, reject) => {
@@ -25,104 +26,120 @@ function runMiddleware(req, res, fn) {
 }
 
 export default async function handler(req, res) {
-  // Only allow POST
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
   try {
-    // 1. Parse multipart form data
     await runMiddleware(req, res, multerMiddleware);
 
-    const description = req.body.description?.trim();
-    if (!description) {
-      return res.status(400).json({ error: 'Description is required' });
+    const frontDesc = req.body.frontDescription?.trim();
+    const backDesc = req.body.backDescription?.trim();
+    const shape = req.body.shape || 'round';
+
+    if (!frontDesc || !backDesc) {
+      return res.status(400).json({ error: 'Both front and back descriptions are required' });
     }
 
-    const imageFile = req.file; // undefined if no image uploaded
+    // Get uploaded files
+    const frontImageFile = req.files?.frontImage?.[0];
+    const backImageFile = req.files?.backImage?.[0];
+    const sideImageFile = req.files?.sideImage?.[0]; // optional, can be used for both sides or ignored
 
-    // ----- STEP 1: Generate the perfect DALL·E 3 prompt -----
-    let finalPrompt;
+    // Helper to generate prompt for a single side
+    async function generatePrompt(side, description, imageFile, additionalContext = '') {
+      if (imageFile) {
+        // Use GPT-4V with reference image
+        const base64 = imageFile.buffer.toString('base64');
+        const dataUrl = `data:${imageFile.mimetype};base64,${base64}`;
 
-    if (imageFile) {
-      // --- Case A: Reference image provided → Use GPT‑4V ---
-      const base64Image = imageFile.buffer.toString('base64');
-      const dataUrl = `data:${imageFile.mimetype};base64,${base64Image}`;
-
-      const visionResponse = await openai.chat.completions.create({
-        model: 'gpt-4o',
-        messages: [
-          {
-            role: 'system',
-            content: `You are an expert coin designer. 
-            - Analyze the reference image and the user's description.
-            - Create ONE single, extremely detailed DALL·E 3 prompt that will generate a realistic, metallic coin.
-            - The coin must be perfectly centered, facing forward, with crisp details.
-            - Include: metal texture (gold/silver/bronze), edge details, denomination or text if any, and exact visual elements from the reference image.
-            - Output ONLY the prompt – no explanations, no extra text.`,
-          },
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: `User's description: ${description}` },
-              { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
-            ],
-          },
-        ],
-        max_tokens: 500,
-        temperature: 0.7,
-      });
-
-      finalPrompt = visionResponse.choices[0].message.content.trim();
-    } else {
-      // --- Case B: No image → Use GPT‑4 to enrich the description ---
-      const textResponse = await openai.chat.completions.create({
-        model: 'gpt-4o', // or 'gpt-3.5-turbo' for lower cost
-        messages: [
-          {
-            role: 'system',
-            content: `You are an expert coin designer. 
-            - Expand the user's description into a detailed DALL·E 3 prompt.
-            - The coin must be metallic, 3D, centered, with sharp details, realistic lighting.
-            - Describe shape, symbols, inscriptions, edge style, and finish (gold/silver/copper).
-            - Output ONLY the prompt – nothing else.`,
-          },
-          {
-            role: 'user',
-            content: description,
-          },
-        ],
-        max_tokens: 400,
-        temperature: 0.7,
-      });
-
-      finalPrompt = textResponse.choices[0].message.content.trim();
+        const visionResponse = await openai.chat.completions.create({
+          model: 'gpt-4o',
+          messages: [
+            {
+              role: 'system',
+              content: `You are an expert coin designer. Create a DALL·E 3 prompt for the ${side} of a coin.
+              - Analyze the reference image and the user's description.
+              - The coin must be metallic, 3D, centered, with sharp details.
+              - Include metal texture, edge details, denomination or text if any.
+              - Output ONLY the prompt – no extra text.`,
+            },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: `Description: ${description}. Shape: ${shape}. ${additionalContext}` },
+                { type: 'image_url', image_url: { url: dataUrl, detail: 'high' } },
+              ],
+            },
+          ],
+          max_tokens: 500,
+          temperature: 0.7,
+        });
+        return visionResponse.choices[0].message.content.trim();
+      } else {
+        // Text-only GPT-4 prompt
+        const textResponse = await openai.chat.completions.create({
+          model: 'gpt-4o',
+          messages: [
+            {
+              role: 'system',
+              content: `You are an expert coin designer. Create a DALL·E 3 prompt for the ${side} of a coin.
+              - Expand the user's description into a detailed prompt.
+              - The coin must be metallic, 3D, centered, with sharp details.
+              - Describe shape, symbols, inscriptions, edge style, and finish.
+              - Output ONLY the prompt.`,
+            },
+            {
+              role: 'user',
+              content: `Description: ${description}. Shape: ${shape}. ${additionalContext}`,
+            },
+          ],
+          max_tokens: 400,
+          temperature: 0.7,
+        });
+        return textResponse.choices[0].message.content.trim();
+      }
     }
 
-    // ----- STEP 2: Generate the coin with DALL·E 3 -----
-    const imageResponse = await openai.images.generate({
-      model: 'dall-e-3',
-      prompt: finalPrompt,
-      n: 1,
-      size: '1024x1024',
-      quality: 'hd',      // essential for metallic/realistic look
-      style: 'vivid',     // more dramatic lighting and contrast
-      response_format: 'b64_json',
-    });
+    // Generate prompts for front and back (possibly using side image as extra reference)
+    const [frontPrompt, backPrompt] = await Promise.all([
+      generatePrompt('front', frontDesc, frontImageFile, sideImageFile ? 'Use side reference for overall form.' : ''),
+      generatePrompt('back', backDesc, backImageFile, sideImageFile ? 'Use side reference for overall form.' : ''),
+    ]);
 
-    const base64 = imageResponse.data[0].b64_json;
+    // Generate both images concurrently
+    const [frontImageRes, backImageRes] = await Promise.all([
+      openai.images.generate({
+        model: 'dall-e-3',
+        prompt: frontPrompt,
+        n: 1,
+        size: '1024x1024',
+        quality: 'hd',
+        style: 'vivid',
+        response_format: 'b64_json',
+      }),
+      openai.images.generate({
+        model: 'dall-e-3',
+        prompt: backPrompt,
+        n: 1,
+        size: '1024x1024',
+        quality: 'hd',
+        style: 'vivid',
+        response_format: 'b64_json',
+      }),
+    ]);
 
-    // ----- STEP 3: Return success response -----
     return res.status(200).json({
       success: true,
-      imageBase64: base64,
+      frontImageBase64: frontImageRes.data[0].b64_json,
+      backImageBase64: backImageRes.data[0].b64_json,
+      shape, // pass back for frontend 3D
     });
   } catch (error) {
     console.error('Coin generation error:', error);
     return res.status(500).json({
       success: false,
       error: error.message || 'Failed to generate coin',
-      details: error.stack, // helpful for debugging, remove in production
     });
   }
 }
