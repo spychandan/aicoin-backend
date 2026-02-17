@@ -3,7 +3,6 @@ import multer from 'multer';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-// Configure multer for multiple files under one field 'images'
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB per file
@@ -21,6 +20,16 @@ function runMiddleware(req, res, fn) {
 }
 
 export default async function handler(req, res) {
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*'); // In production, restrict to your Shopify domain
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -36,19 +45,17 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: 'Both front and back descriptions are required' });
     }
 
-    const imageFiles = req.files || []; // array of uploaded files
+    const imageFiles = req.files || [];
 
-    // Helper to build a prompt with optional image references
     async function generatePrompt(side, description, additionalContext = '') {
       let userContent = `Description: ${description}. Shape: ${shape}. ${additionalContext}`;
 
       if (imageFiles.length > 0) {
-        // Include all reference images in the prompt (up to 3 to stay within token limits)
         const imageContents = await Promise.all(
           imageFiles.slice(0, 3).map(async (file) => {
             const base64 = file.buffer.toString('base64');
             const dataUrl = `data:${file.mimetype};base64,${base64}`;
-            return { type: 'image_url', image_url: { url: dataUrl, detail: 'low' } }; // low detail to save tokens
+            return { type: 'image_url', image_url: { url: dataUrl, detail: 'low' } };
           })
         );
 
@@ -76,7 +83,6 @@ export default async function handler(req, res) {
         });
         return visionResponse.choices[0].message.content.trim();
       } else {
-        // Text-only
         const textResponse = await openai.chat.completions.create({
           model: 'gpt-4o',
           messages: [
@@ -97,13 +103,12 @@ export default async function handler(req, res) {
       }
     }
 
-    // Generate prompts for front and back (both get all reference images)
     const [frontPrompt, backPrompt] = await Promise.all([
       generatePrompt('front', frontDesc),
       generatePrompt('back', backDesc),
     ]);
 
-    // Generate both images concurrently
+    // Generate images with URL output (to avoid base64 size limits)
     const [frontImageRes, backImageRes] = await Promise.all([
       openai.images.generate({
         model: 'dall-e-3',
@@ -112,7 +117,7 @@ export default async function handler(req, res) {
         size: '1024x1024',
         quality: 'hd',
         style: 'vivid',
-        response_format: 'b64_json',
+        // No response_format => returns URL
       }),
       openai.images.generate({
         model: 'dall-e-3',
@@ -121,14 +126,13 @@ export default async function handler(req, res) {
         size: '1024x1024',
         quality: 'hd',
         style: 'vivid',
-        response_format: 'b64_json',
       }),
     ]);
 
     return res.status(200).json({
       success: true,
-      frontImageBase64: frontImageRes.data[0].b64_json,
-      backImageBase64: backImageRes.data[0].b64_json,
+      frontImageUrl: frontImageRes.data[0].url,
+      backImageUrl: backImageRes.data[0].url,
       shape,
     });
   } catch (error) {
