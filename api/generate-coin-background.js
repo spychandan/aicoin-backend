@@ -20,7 +20,7 @@ function runMiddleware(req, res, fn) {
 }
 
 export default async function handler(req, res) {
-  // Set CORS headers
+  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -46,55 +46,47 @@ export default async function handler(req, res) {
 
     const imageFiles = req.files || [];
 
-    // Helper to generate prompt with safety fallback for vision
-    async function generatePrompt(side, description, additionalContext = '') {
-      let userContent = `Description: ${description}. Shape: ${shape}. ${additionalContext}`;
+    // Helper: generate prompt using images (vision)
+    async function generatePromptWithImages(side, description) {
+      const userContent = `Description: ${description}. Shape: ${shape}.`;
 
-      if (imageFiles.length > 0) {
-        try {
-          const imageContents = await Promise.all(
-            imageFiles.slice(0, 3).map(async (file) => {
-              const base64 = file.buffer.toString('base64');
-              const dataUrl = `data:${file.mimetype};base64,${base64}`;
-              return { type: 'image_url', image_url: { url: dataUrl, detail: 'low' } };
-            })
-          );
+      const imageContents = await Promise.all(
+        imageFiles.slice(0, 3).map(async (file) => {
+          const base64 = file.buffer.toString('base64');
+          const dataUrl = `data:${file.mimetype};base64,${base64}`;
+          return { type: 'image_url', image_url: { url: dataUrl, detail: 'low' } };
+        })
+      );
 
-          const visionResponse = await openai.chat.completions.create({
-            model: 'gpt-4o',
-            messages: [
-              {
-                role: 'system',
-                content: `You are an expert coin designer. Create a DALL·E 3 prompt for the ${side} of a coin.
-                - Analyze any reference images and the user's description.
-                - The coin must be metallic, 3D, centered, with sharp details.
-                - Include metal texture, edge details, denomination or text if any.
-                - Output ONLY the prompt – no extra text.`,
-              },
-              {
-                role: 'user',
-                content: [
-                  { type: 'text', text: userContent },
-                  ...imageContents,
-                ],
-              },
+      const visionResponse = await openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content: `You are an expert coin designer. Create a DALL·E 3 prompt for the ${side} of a coin.
+            - Analyze the reference images and the user's description.
+            - The coin must be metallic, 3D, centered, with sharp details.
+            - Include metal texture, edge details, denomination or text if any.
+            - Output ONLY the prompt – no extra text.`,
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: userContent },
+              ...imageContents,
             ],
-            max_tokens: 500,
-            temperature: 0.7,
-          });
-          return visionResponse.choices[0].message.content.trim();
-        } catch (visionError) {
-          // If vision fails due to safety, fall back to text-only
-          if (visionError.status === 400 && visionError.code === 'content_policy_violation') {
-            console.warn(`Vision safety error for ${side}, falling back to text-only`);
-            // Continue to text-only generation
-          } else {
-            throw visionError; // rethrow other errors
-          }
-        }
-      }
+          },
+        ],
+        max_tokens: 500,
+        temperature: 0.7,
+      });
+      return visionResponse.choices[0].message.content.trim();
+    }
 
-      // Text-only fallback
+    // Helper: generate prompt using text only
+    async function generatePromptTextOnly(side, description) {
+      const userContent = `Description: ${description}. Shape: ${shape}.`;
+
       const textResponse = await openai.chat.completions.create({
         model: 'gpt-4o',
         messages: [
@@ -114,49 +106,87 @@ export default async function handler(req, res) {
       return textResponse.choices[0].message.content.trim();
     }
 
-    const [frontPrompt, backPrompt] = await Promise.all([
-      generatePrompt('front', frontDesc),
-      generatePrompt('back', backDesc),
+    // Generate prompts (with fallback if vision fails)
+    let frontPrompt, backPrompt;
+    let imagesUsed = false;
+
+    if (imageFiles.length > 0) {
+      imagesUsed = true;
+      try {
+        [frontPrompt, backPrompt] = await Promise.all([
+          generatePromptWithImages('front', frontDesc),
+          generatePromptWithImages('back', backDesc),
+        ]);
+      } catch (visionError) {
+        // If vision fails due to safety, fall back to text-only for both
+        if (visionError.status === 400 && visionError.code === 'content_policy_violation') {
+          console.warn('Vision safety error, falling back to text-only for both sides');
+          imagesUsed = false; // mark that images weren't used
+          [frontPrompt, backPrompt] = await Promise.all([
+            generatePromptTextOnly('front', frontDesc),
+            generatePromptTextOnly('back', backDesc),
+          ]);
+        } else {
+          throw visionError; // rethrow other errors
+        }
+      }
+    } else {
+      // No images, just text
+      [frontPrompt, backPrompt] = await Promise.all([
+        generatePromptTextOnly('front', frontDesc),
+        generatePromptTextOnly('back', backDesc),
+      ]);
+    }
+
+    // Helper: generate image with retry on safety violation
+    async function generateImageWithRetry(prompt, side, description, usedImages) {
+      try {
+        const res = await openai.images.generate({
+          model: 'dall-e-3',
+          prompt,
+          n: 1,
+          size: '1024x1024',
+          quality: 'hd',
+          style: 'vivid',
+        });
+        return res.data[0].url;
+      } catch (error) {
+        if (error.status === 400 && error.code === 'content_policy_violation') {
+          console.warn(`DALL·E safety error for ${side}, retrying with text-only prompt`);
+          // Generate a new prompt without any image influence
+          const textOnlyPrompt = await generatePromptTextOnly(side, description);
+          const res = await openai.images.generate({
+            model: 'dall-e-3',
+            prompt: textOnlyPrompt,
+            n: 1,
+            size: '1024x1024',
+            quality: 'hd',
+            style: 'vivid',
+          });
+          return res.data[0].url;
+        } else {
+          throw error;
+        }
+      }
+    }
+
+    // Generate images with per-side retry
+    const [frontImageUrl, backImageUrl] = await Promise.all([
+      generateImageWithRetry(frontPrompt, 'front', frontDesc, imagesUsed),
+      generateImageWithRetry(backPrompt, 'back', backDesc, imagesUsed),
     ]);
 
-    // Generate images with safety handling for DALL·E
-    let frontImageRes, backImageRes;
-    try {
-      [frontImageRes, backImageRes] = await Promise.all([
-        openai.images.generate({
-          model: 'dall-e-3',
-          prompt: frontPrompt,
-          n: 1,
-          size: '1024x1024',
-          quality: 'hd',
-          style: 'vivid',
-        }),
-        openai.images.generate({
-          model: 'dall-e-3',
-          prompt: backPrompt,
-          n: 1,
-          size: '1024x1024',
-          quality: 'hd',
-          style: 'vivid',
-        }),
-      ]);
-    } catch (imageError) {
-      // Check if it's a safety policy violation
-      if (imageError.status === 400 && imageError.code === 'content_policy_violation') {
-        return res.status(400).json({
-          success: false,
-          error: 'Your description was flagged by our safety system. Please rephrase your design descriptions (avoid potentially sensitive words like violence, weapons, hate symbols, etc.) and try again.',
-        });
-      }
-      // If it's another error, rethrow
-      throw imageError;
-    }
+    // Determine if any side fell back to text-only due to safety
+    const finalImagesUsed = imagesUsed; // may be false if vision failed
+    // (We could add more granular flags, but this is enough for now)
 
     return res.status(200).json({
       success: true,
-      frontImageUrl: frontImageRes.data[0].url,
-      backImageUrl: backImageRes.data[0].url,
+      frontImageUrl,
+      backImageUrl,
       shape,
+      imagesUsed: finalImagesUsed,
+      message: finalImagesUsed ? null : 'Your reference images could not be processed due to safety filters. The coin was generated based on your text descriptions only.',
     });
   } catch (error) {
     console.error('Coin generation error:', error);
