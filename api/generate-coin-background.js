@@ -8,7 +8,7 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB per file
 });
 
-const multerMiddleware = upload.array('images', 5); // max 5 images
+const multerMiddleware = upload.array('images', 5);
 
 function runMiddleware(req, res, fn) {
   return new Promise((resolve, reject) => {
@@ -36,19 +36,26 @@ export default async function handler(req, res) {
   try {
     await runMiddleware(req, res, multerMiddleware);
 
-    const frontDesc = req.body.frontDescription?.trim();
-    const backDesc = req.body.backDescription?.trim();
-    const shape = req.body.shape || 'round';
-
-    if (!frontDesc || !backDesc) {
-      return res.status(400).json({ error: 'Both front and back descriptions are required' });
-    }
-
+    const { type, shape, frontDescription, backDescription, patchDescription, velcro } = req.body;
     const imageFiles = req.files || [];
 
-    // Helper: generate prompt using images (vision)
-    async function generatePromptWithImages(side, description) {
-      const userContent = `Description: ${description}. Shape: ${shape}.`;
+    if (!type || (type !== 'coin' && type !== 'patch')) {
+      return res.status(400).json({ error: 'Invalid or missing type' });
+    }
+
+    if (type === 'coin') {
+      if (!frontDescription?.trim() || !backDescription?.trim()) {
+        return res.status(400).json({ error: 'Both front and back descriptions are required for coin' });
+      }
+    } else {
+      if (!patchDescription?.trim()) {
+        return res.status(400).json({ error: 'Patch description is required' });
+      }
+    }
+
+    // Helper: generate prompt with images (vision) or text only
+    async function generatePromptWithImages(sideOrPatch, description, extraHint = '') {
+      const userContent = `Description: ${description}. Shape: ${shape}. ${extraHint}`;
 
       const imageContents = await Promise.all(
         imageFiles.slice(0, 3).map(async (file) => {
@@ -63,10 +70,10 @@ export default async function handler(req, res) {
         messages: [
           {
             role: 'system',
-            content: `You are an expert coin designer. Create a DALL·E 3 prompt for the ${side} of a coin.
+            content: `You are an expert ${type} designer. Create a DALL·E 3 prompt for the ${sideOrPatch}.
             - Analyze the reference images and the user's description.
-            - The coin must be metallic, 3D, centered, with sharp details.
-            - Include metal texture, edge details, denomination or text if any.
+            - The design must be centered, with sharp details.
+            - Include appropriate textures and finishes.
             - Output ONLY the prompt – no extra text.`,
           },
           {
@@ -83,19 +90,17 @@ export default async function handler(req, res) {
       return visionResponse.choices[0].message.content.trim();
     }
 
-    // Helper: generate prompt using text only
-    async function generatePromptTextOnly(side, description) {
-      const userContent = `Description: ${description}. Shape: ${shape}.`;
+    async function generatePromptTextOnly(sideOrPatch, description, extraHint = '') {
+      const userContent = `Description: ${description}. Shape: ${shape}. ${extraHint}`;
 
       const textResponse = await openai.chat.completions.create({
         model: 'gpt-4o',
         messages: [
           {
             role: 'system',
-            content: `You are an expert coin designer. Create a DALL·E 3 prompt for the ${side} of a coin.
+            content: `You are an expert ${type} designer. Create a DALL·E 3 prompt for the ${sideOrPatch}.
             - Expand the user's description into a detailed prompt.
-            - The coin must be metallic, 3D, centered, with sharp details.
-            - Describe shape, symbols, inscriptions, edge style, and finish.
+            - Describe shape, symbols, inscriptions, and finish.
             - Output ONLY the prompt.`,
           },
           { role: 'user', content: userContent },
@@ -106,40 +111,63 @@ export default async function handler(req, res) {
       return textResponse.choices[0].message.content.trim();
     }
 
-    // Generate prompts (with fallback if vision fails)
-    let frontPrompt, backPrompt;
+    // Determine prompts based on type
+    let prompts = [];
     let imagesUsed = false;
 
-    if (imageFiles.length > 0) {
-      imagesUsed = true;
-      try {
-        [frontPrompt, backPrompt] = await Promise.all([
-          generatePromptWithImages('front', frontDesc),
-          generatePromptWithImages('back', backDesc),
-        ]);
-      } catch (visionError) {
-        // If vision fails due to safety, fall back to text-only for both
-        if (visionError.status === 400 && visionError.code === 'content_policy_violation') {
-          console.warn('Vision safety error, falling back to text-only for both sides');
-          imagesUsed = false; // mark that images weren't used
-          [frontPrompt, backPrompt] = await Promise.all([
-            generatePromptTextOnly('front', frontDesc),
-            generatePromptTextOnly('back', backDesc),
+    if (type === 'coin') {
+      // Generate two prompts (front & back)
+      if (imageFiles.length > 0) {
+        imagesUsed = true;
+        try {
+          prompts = await Promise.all([
+            generatePromptWithImages('front', frontDescription),
+            generatePromptWithImages('back', backDescription),
           ]);
-        } else {
-          throw visionError; // rethrow other errors
+        } catch (visionError) {
+          if (visionError.status === 400 && visionError.code === 'content_policy_violation') {
+            console.warn('Vision safety error, falling back to text-only');
+            imagesUsed = false;
+            prompts = await Promise.all([
+              generatePromptTextOnly('front', frontDescription),
+              generatePromptTextOnly('back', backDescription),
+            ]);
+          } else {
+            throw visionError;
+          }
         }
+      } else {
+        prompts = await Promise.all([
+          generatePromptTextOnly('front', frontDescription),
+          generatePromptTextOnly('back', backDescription),
+        ]);
       }
     } else {
-      // No images, just text
-      [frontPrompt, backPrompt] = await Promise.all([
-        generatePromptTextOnly('front', frontDesc),
-        generatePromptTextOnly('back', backDesc),
-      ]);
+      // Patch: single prompt, optionally include velcro
+      const extraHint = velcro === 'yes' ? 'The patch has a velcro backing.' : '';
+      if (imageFiles.length > 0) {
+        imagesUsed = true;
+        try {
+          const prompt = await generatePromptWithImages('patch', patchDescription, extraHint);
+          prompts = [prompt];
+        } catch (visionError) {
+          if (visionError.status === 400 && visionError.code === 'content_policy_violation') {
+            console.warn('Vision safety error, falling back to text-only');
+            imagesUsed = false;
+            const prompt = await generatePromptTextOnly('patch', patchDescription, extraHint);
+            prompts = [prompt];
+          } else {
+            throw visionError;
+          }
+        }
+      } else {
+        const prompt = await generatePromptTextOnly('patch', patchDescription, extraHint);
+        prompts = [prompt];
+      }
     }
 
     // Helper: generate image with retry on safety violation
-    async function generateImageWithRetry(prompt, side, description, usedImages) {
+    async function generateImageWithRetry(prompt, sideOrPatch, description, extraHint = '') {
       try {
         const res = await openai.images.generate({
           model: 'dall-e-3',
@@ -152,9 +180,8 @@ export default async function handler(req, res) {
         return res.data[0].url;
       } catch (error) {
         if (error.status === 400 && error.code === 'content_policy_violation') {
-          console.warn(`DALL·E safety error for ${side}, retrying with text-only prompt`);
-          // Generate a new prompt without any image influence
-          const textOnlyPrompt = await generatePromptTextOnly(side, description);
+          console.warn(`DALL·E safety error for ${sideOrPatch}, retrying with text-only prompt`);
+          const textOnlyPrompt = await generatePromptTextOnly(sideOrPatch, description, extraHint);
           const res = await openai.images.generate({
             model: 'dall-e-3',
             prompt: textOnlyPrompt,
@@ -170,29 +197,35 @@ export default async function handler(req, res) {
       }
     }
 
-    // Generate images with per-side retry
-    const [frontImageUrl, backImageUrl] = await Promise.all([
-      generateImageWithRetry(frontPrompt, 'front', frontDesc, imagesUsed),
-      generateImageWithRetry(backPrompt, 'back', backDesc, imagesUsed),
-    ]);
-
-    // Determine if any side fell back to text-only due to safety
-    const finalImagesUsed = imagesUsed; // may be false if vision failed
-    // (We could add more granular flags, but this is enough for now)
+    // Generate image(s)
+    let imageUrls;
+    if (type === 'coin') {
+      const [frontPrompt, backPrompt] = prompts;
+      const [frontUrl, backUrl] = await Promise.all([
+        generateImageWithRetry(frontPrompt, 'front', frontDescription),
+        generateImageWithRetry(backPrompt, 'back', backDescription),
+      ]);
+      imageUrls = { frontImageUrl: frontUrl, backImageUrl: backUrl };
+    } else {
+      const [patchPrompt] = prompts;
+      const patchUrl = await generateImageWithRetry(patchPrompt, 'patch', patchDescription, velcro === 'yes' ? 'with velcro' : '');
+      imageUrls = { patchImageUrl: patchUrl };
+    }
 
     return res.status(200).json({
       success: true,
-      frontImageUrl,
-      backImageUrl,
+      type,
+      ...imageUrls,
       shape,
-      imagesUsed: finalImagesUsed,
-      message: finalImagesUsed ? null : 'Your reference images could not be processed due to safety filters. The coin was generated based on your text descriptions only.',
+      velcro: velcro || 'no',
+      imagesUsed,
+      message: imagesUsed ? null : 'Your reference images could not be processed due to safety filters. The design was generated based on your text descriptions only.',
     });
   } catch (error) {
-    console.error('Coin generation error:', error);
+    console.error('Generation error:', error);
     return res.status(500).json({
       success: false,
-      error: error.message || 'Failed to generate coin',
+      error: error.message || 'Failed to generate design',
     });
   }
 }
