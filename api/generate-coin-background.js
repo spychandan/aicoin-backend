@@ -28,11 +28,14 @@ async function generateImage(prompt) {
       body: JSON.stringify({
         contents: [
           {
-            parts: [{ text: prompt }]
+            role: "user",
+            parts: [
+              { text: prompt }
+            ]
           }
         ],
         generationConfig: {
-          responseModalities: ["TEXT", "IMAGE"]
+          responseModalities: ["IMAGE"]
         }
       })
     }
@@ -40,11 +43,19 @@ async function generateImage(prompt) {
 
   const data = await response.json();
 
-  const parts = data.candidates?.[0]?.content?.parts || [];
+  console.log("Gemini response:", JSON.stringify(data, null, 2));
+
+  if (!data.candidates || !data.candidates.length) {
+    throw new Error("Gemini returned no candidates");
+  }
+
+  const parts = data.candidates[0].content.parts;
 
   const imagePart = parts.find(p => p.inlineData);
 
-  if (!imagePart) throw new Error("No image generated");
+  if (!imagePart) {
+    throw new Error("Gemini did not return an image");
+  }
 
   return `data:image/png;base64,${imagePart.inlineData.data}`;
 }
