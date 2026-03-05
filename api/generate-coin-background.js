@@ -17,8 +17,8 @@ function runMiddleware(req, res, fn) {
 }
 
 async function generateImage(prompt) {
-  // ✅ CORRECT MODEL NAME
-  const model = "gemini-2.0-flash-exp";
+  // ✅ CORRECT MODEL NAME (as of March 2026)
+  const model = "gemini-3.1-flash-image-preview";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`;
 
   const response = await fetch(url, {
@@ -34,7 +34,7 @@ async function generateImage(prompt) {
         },
       ],
       generationConfig: {
-        responseModalities: ["IMAGE"], // Keep uppercase as before
+        responseModalities: ["IMAGE"],
       },
     }),
   });
